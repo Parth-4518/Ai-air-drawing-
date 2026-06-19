@@ -3,12 +3,16 @@ import Sidebar from "./components/Sidebar";
 import Topbar from "./components/Topbar";
 
 import { detectGesture } from "./Services/GestureController";
-import { detectShape } from "./Services/ShapeDetector";
 import { useEffect, useRef, useState } from "react";
 import { createHandTracker } from "./Services/HandTracker";
 import Canvas from "./components/Canvas";
 
 import { saveDrawing, getDrawings, deleteDrawing } from "./Services/api";
+
+// 🔥 PHASE 12 AI IMPORTS
+import * as tf from "@tensorflow/tfjs";
+import { extractFeatures } from "./Services/ShapeAIModel";
+import { model } from "./Services/ShapeAIModel"; // make sure model is exported properly
 
 function CameraComponent() {
   const videoRef = useRef(null);
@@ -98,15 +102,6 @@ function CameraComponent() {
       return;
     }
 
-    if (
-      video.videoWidth === 0 ||
-      video.videoHeight === 0 ||
-      video.readyState < 2
-    ) {
-      requestAnimationFrame(detectHands);
-      return;
-    }
-
     const results = landmarker.detectForVideo(video, performance.now());
 
     if (results.landmarks?.length > 0) {
@@ -122,25 +117,46 @@ function CameraComponent() {
 
       const now = Date.now();
 
+      // DRAW
       if (gesture === "DRAW" && now - lastLogTimeRef.current > 30) {
         pointsRef.current.push({ x, y });
         setPoints([...pointsRef.current]);
         lastLogTimeRef.current = now;
       }
 
+      // CLEAR
       if (gesture === "CLEAR") {
         pointsRef.current = [];
         setPoints([]);
         setShape("NONE");
       }
 
+      // =========================
+      // 🔥 AI PREDICTION (FIXED)
+      // =========================
       if (
         gesture === "STOP" &&
         lastGestureRef.current !== "STOP" &&
-        pointsRef.current.length > 80
+        pointsRef.current.length > 30 &&
+        model
       ) {
-        const result = detectShape([...pointsRef.current]);
-        setShape(result);
+        try {
+          const features = extractFeatures(pointsRef.current);
+
+          const input = tf.tensor2d([features]);
+
+          const prediction = model.predict(input);
+
+          const index = prediction.argMax(1).dataSync()[0];
+
+          const labels = ["CIRCLE", "SQUARE", "TRIANGLE"];
+
+          setShape(labels[index]);
+
+          tf.dispose([input, prediction]);
+        } catch (err) {
+          console.error("AI prediction error:", err);
+        }
       }
 
       lastGestureRef.current = gesture;
@@ -159,24 +175,24 @@ function CameraComponent() {
   };
 
   // =========================
-  // SAVE (PHASE 10 FIXED)
+  // SAVE
   // =========================
   const saveCanvas = async () => {
     const canvas = document.querySelector("canvas");
     if (!canvas) return;
 
     try {
-      // 🖼️ Convert canvas to image
       const image = canvas.toDataURL("image/png");
 
+      const token = localStorage.getItem("token");
+
       await saveDrawing({
-        userId: "USER_ID_HERE", // replace later with login
         image,
         name: `Drawing ${Date.now()}`,
         color,
         brushSize,
         detectedShape: shape,
-      });
+      }, token);
 
       alert("Drawing Saved Successfully!");
       fetchDrawings();
@@ -190,7 +206,9 @@ function CameraComponent() {
   // =========================
   const handleDelete = async (id) => {
     try {
-      await deleteDrawing(id);
+      const token = localStorage.getItem("token");
+
+      await deleteDrawing(id, token);
       fetchDrawings();
     } catch (err) {
       console.error(err);
@@ -226,7 +244,6 @@ function CameraComponent() {
 
       <Canvas points={points} color={color} brushSize={brushSize} />
 
-      {/* SAVED DRAWINGS */}
       <div style={{ marginTop: "20px" }}>
         <h2>Saved Drawings</h2>
 
