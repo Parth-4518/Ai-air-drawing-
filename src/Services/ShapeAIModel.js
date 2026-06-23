@@ -1,3 +1,5 @@
+// ShapeAIModel.js
+
 export const extractFeatures = (points) => {
   if (!points || points.length === 0) {
     return [0, 0, 0, 0, 0];
@@ -15,7 +17,7 @@ export const extractFeatures = (points) => {
 
     minX = Math.min(minX, points[i].x);
     maxX = Math.max(maxX, points[i].x);
-    minY = Math.min(minY, points[i].y);
+    minY = Math.max(minY, points[i].y);
     maxY = Math.max(maxY, points[i].y);
   }
 
@@ -23,10 +25,23 @@ export const extractFeatures = (points) => {
   const height = maxY - minY;
 
   return [
-    points.length,                 // density
-    width,                        // shape width
-    height,                       // shape height
-    totalDistance,               // stroke length
-    width / (height + 1)         // ratio
+    points.length,
+    width,
+    height,
+    totalDistance,
+    width / (height + 1)
   ];
+};
+
+/**
+ * TEMP MODEL (fixes your crash)
+ * Replace later with real ML model if needed
+ */
+export const model = {
+  predict: (features) => {
+    console.log("Features received:", features);
+
+    // dummy prediction (you can improve later)
+    return "unknown_shape";
+  }
 };

@@ -1,11 +1,14 @@
 import Camera from "./Camera";
+import { ThemeProvider } from "./context/ThemeContext";
+import "./App.css";
 
 function App() {
   return (
-    <div>
-      <h1>AI Air Drawing System</h1>
-      <Camera />
-    </div>
+    <ThemeProvider>
+      <div className="app">
+        <Camera />
+      </div>
+    </ThemeProvider>
   );
 }
 

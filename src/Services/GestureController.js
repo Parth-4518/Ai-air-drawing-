@@ -19,6 +19,7 @@ export const detectGesture = (landmarks) => {
   const allUp = indexUp && middleUp && ringUp && pinkyUp;
   const fist = !indexUp && !middleUp && !ringUp && !pinkyUp;
   const twoFingers = indexUp && middleUp && !ringUp && !pinkyUp;
+  const threeFingers = indexUp && middleUp && ringUp && !pinkyUp;
 
   // 🎯 GESTURE RULES
 
@@ -27,6 +28,8 @@ export const detectGesture = (landmarks) => {
   if (fist) return "STOP";
 
   if (twoFingers) return "TOOLBAR";
+
+  if (threeFingers) return "DELETE";
 
   if (indexUp && !middleUp) return "DRAW";
 

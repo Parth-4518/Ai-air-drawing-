@@ -9,10 +9,7 @@ import Canvas from "./components/Canvas";
 
 import { saveDrawing, getDrawings, deleteDrawing } from "./Services/api";
 
-// 🔥 PHASE 12 AI IMPORTS
-import * as tf from "@tensorflow/tfjs";
-import { extractFeatures } from "./Services/ShapeAIModel";
-import { model } from "./Services/ShapeAIModel"; // make sure model is exported properly
+import { ShapeManager } from "./Services/ShapeManager";
 
 function CameraComponent() {
   const videoRef = useRef(null);
@@ -21,22 +18,39 @@ function CameraComponent() {
   const runningRef = useRef(false);
 
   const lastLogTimeRef = useRef(0);
-
-  const pointsRef = useRef([]);
   const lastGestureRef = useRef("STOP");
 
-  const [points, setPoints] = useState([]);
   const [mode, setMode] = useState("STOP");
   const [shape, setShape] = useState("NONE");
 
   const [color, setColor] = useState("black");
+  const colorRef = useRef("black");
   const [brushSize, setBrushSize] = useState(5);
+  const brushSizeRef = useRef(5);
+
+  // Keep refs in sync with state
+  useEffect(() => {
+    colorRef.current = color;
+  }, [color]);
+
+  useEffect(() => {
+    brushSizeRef.current = brushSize;
+  }, [brushSize]);
 
   const [savedDrawings, setSavedDrawings] = useState([]);
 
-  // =========================
-  // CAMERA START
-  // =========================
+  // Video size state
+  const [videoSize, setVideoSize] = useState({
+    width: 640,
+    height: 480,
+  });
+
+  // Multi-stroke shape manager
+  const shapeManagerRef = useRef(new ShapeManager());
+  const [drawables, setDrawables] = useState([]);
+  const [selectedShapeId, setSelectedShapeId] = useState(null);
+  const lastPositionRef = useRef(null);
+
   useEffect(() => {
     const startCamera = async () => {
       try {
@@ -57,6 +71,12 @@ function CameraComponent() {
           video.onloadedmetadata = resolve;
         });
 
+        // Set real camera resolution
+        setVideoSize({
+          width: video.videoWidth,
+          height: video.videoHeight,
+        });
+
         detectHands();
       } catch (err) {
         console.error("Camera error:", err);
@@ -65,6 +85,189 @@ function CameraComponent() {
 
     startCamera();
   }, []);
+
+  // =========================
+  // HAND TRACKING
+  // =========================
+  const detectHands = async () => {
+    const video = videoRef.current;
+    const landmarker = handLandmarkerRef.current;
+
+    if (!video || !landmarker) {
+      requestAnimationFrame(detectHands);
+      return;
+    }
+
+    const results = landmarker.detectForVideo(video, performance.now());
+
+    let gesture = "STOP";
+
+    if (results.landmarks?.length > 0) {
+      const landmarks = results.landmarks[0];
+
+      gesture = detectGesture(landmarks);
+      setMode(gesture);
+
+      const indexFinger = landmarks[8];
+
+      // Use videoSize for coordinate mapping
+      const x = Math.round(indexFinger.x * videoSize.width);
+      const y = Math.round(indexFinger.y * videoSize.height);
+
+      const now = Date.now();
+
+      const shapeManager = shapeManagerRef.current;
+
+      // =========================
+      // DRAW
+      // =========================
+      if (gesture === "DRAW" && now - lastLogTimeRef.current > 25) {
+        // Start new stroke if not already drawing
+        if (!shapeManager.isDrawing) {
+          shapeManager.startStroke({ x, y }, colorRef.current, brushSizeRef.current);
+        } else {
+          shapeManager.addPoint({ x, y });
+        }
+
+        setDrawables([...shapeManager.getAllDrawables()]);
+        setShape("DRAWING...");
+
+        lastLogTimeRef.current = now;
+      }
+
+      // =========================
+      // CLEAR (all shapes)
+      // =========================
+      if (gesture === "CLEAR") {
+        shapeManager.clear();
+        setDrawables([]);
+        setShape("NONE");
+        setSelectedShapeId(null);
+      }
+
+      // =========================
+      // DELETE (selected shape)
+      // =========================
+      if (gesture === "DELETE") {
+        shapeManager.deleteSelected();
+        setDrawables([...shapeManager.getAllDrawables()]);
+        setSelectedShapeId(null);
+        setShape("DELETED");
+      }
+
+      // =========================
+      // STOP → Finalize stroke (no shape correction)
+      // =========================
+      const wasDrawing = lastGestureRef.current === "DRAW";
+
+      if (
+        gesture === "STOP" &&
+        wasDrawing &&
+        shapeManager.isDrawing
+      ) {
+        const completed = shapeManager.endStroke((points) => ({
+          shape: "freehand",
+          confidence: 0,
+          correctedPoints: points,
+        }));
+
+        if (completed) {
+          setShape("FREEHAND");
+        } else {
+          setShape("NONE");
+        }
+
+        setDrawables([...shapeManager.getAllDrawables()]);
+      }
+
+      // =========================
+      // SELECT (hover over shape)
+      // =========================
+      if (gesture === "STOP" && !shapeManager.isDrawing) {
+        const selected = shapeManager.selectShapeAt({ x, y }, 40);
+        if (selected) {
+          setSelectedShapeId(selected.id);
+        } else {
+          setSelectedShapeId(null);
+        }
+      }
+
+      // =========================
+      // MOVE selected shape
+      // =========================
+      if (gesture === "DRAW" && selectedShapeId && !shapeManager.isDrawing) {
+        if (lastPositionRef.current) {
+          const dx = x - lastPositionRef.current.x;
+          const dy = y - lastPositionRef.current.y;
+          shapeManager.moveSelected(dx, dy);
+          setDrawables([...shapeManager.getAllDrawables()]);
+        }
+        lastPositionRef.current = { x, y };
+      } else {
+        lastPositionRef.current = null;
+      }
+
+      lastGestureRef.current = gesture;
+    }
+
+    requestAnimationFrame(detectHands);
+  };
+
+  // =========================
+  // CLEAR
+  // =========================
+  const clearCanvas = () => {
+    shapeManagerRef.current.clear();
+    setDrawables([]);
+    setShape("NONE");
+    setSelectedShapeId(null);
+  };
+
+  // =========================
+  // UNDO
+  // =========================
+  const undo = () => {
+    shapeManagerRef.current.undo();
+    setDrawables([...shapeManagerRef.current.getAllDrawables()]);
+  };
+
+  // =========================
+  // DELETE SELECTED
+  // =========================
+  const deleteSelected = () => {
+    shapeManagerRef.current.deleteSelected();
+    setDrawables([...shapeManagerRef.current.getAllDrawables()]);
+    setSelectedShapeId(null);
+  };
+
+  // =========================
+  // SAVE
+  // =========================
+  const saveCanvas = async () => {
+    const canvas = document.querySelector("canvas");
+    if (!canvas) return;
+
+    try {
+      const image = canvas.toDataURL("image/png");
+      const token = localStorage.getItem("token");
+
+      await saveDrawing(
+        {
+          image,
+          name: `Drawing ${Date.now()}`,
+          color,
+          brushSize,
+          detectedShape: shape,
+        },
+        token
+      );
+
+      alert("Drawing Saved Successfully!");
+      fetchDrawings();
+    } catch (err) {
+      console.error("Save error:", err);
+    }
+  };
 
   // =========================
   // LOAD DRAWINGS
@@ -90,124 +293,9 @@ function CameraComponent() {
     }
   };
 
-  // =========================
-  // HAND TRACKING
-  // =========================
-  const detectHands = async () => {
-    const video = videoRef.current;
-    const landmarker = handLandmarkerRef.current;
-
-    if (!video || !landmarker) {
-      requestAnimationFrame(detectHands);
-      return;
-    }
-
-    const results = landmarker.detectForVideo(video, performance.now());
-
-    if (results.landmarks?.length > 0) {
-      const landmarks = results.landmarks[0];
-
-      const gesture = detectGesture(landmarks);
-      setMode(gesture);
-
-      const indexFinger = landmarks[8];
-
-      const x = Math.round(indexFinger.x * video.videoWidth);
-      const y = Math.round(indexFinger.y * video.videoHeight);
-
-      const now = Date.now();
-
-      // DRAW
-      if (gesture === "DRAW" && now - lastLogTimeRef.current > 30) {
-        pointsRef.current.push({ x, y });
-        setPoints([...pointsRef.current]);
-        lastLogTimeRef.current = now;
-      }
-
-      // CLEAR
-      if (gesture === "CLEAR") {
-        pointsRef.current = [];
-        setPoints([]);
-        setShape("NONE");
-      }
-
-      // =========================
-      // 🔥 AI PREDICTION (FIXED)
-      // =========================
-      if (
-        gesture === "STOP" &&
-        lastGestureRef.current !== "STOP" &&
-        pointsRef.current.length > 30 &&
-        model
-      ) {
-        try {
-          const features = extractFeatures(pointsRef.current);
-
-          const input = tf.tensor2d([features]);
-
-          const prediction = model.predict(input);
-
-          const index = prediction.argMax(1).dataSync()[0];
-
-          const labels = ["CIRCLE", "SQUARE", "TRIANGLE"];
-
-          setShape(labels[index]);
-
-          tf.dispose([input, prediction]);
-        } catch (err) {
-          console.error("AI prediction error:", err);
-        }
-      }
-
-      lastGestureRef.current = gesture;
-    }
-
-    requestAnimationFrame(detectHands);
-  };
-
-  // =========================
-  // CLEAR
-  // =========================
-  const clearCanvas = () => {
-    pointsRef.current = [];
-    setPoints([]);
-    setShape("NONE");
-  };
-
-  // =========================
-  // SAVE
-  // =========================
-  const saveCanvas = async () => {
-    const canvas = document.querySelector("canvas");
-    if (!canvas) return;
-
-    try {
-      const image = canvas.toDataURL("image/png");
-
-      const token = localStorage.getItem("token");
-
-      await saveDrawing({
-        image,
-        name: `Drawing ${Date.now()}`,
-        color,
-        brushSize,
-        detectedShape: shape,
-      }, token);
-
-      alert("Drawing Saved Successfully!");
-      fetchDrawings();
-    } catch (err) {
-      console.error("Save error:", err);
-    }
-  };
-
-  // =========================
-  // DELETE
-  // =========================
   const handleDelete = async (id) => {
     try {
       const token = localStorage.getItem("token");
-
       await deleteDrawing(id, token);
       fetchDrawings();
     } catch (err) {
@@ -218,50 +306,73 @@ function CameraComponent() {
   const drawings = Array.isArray(savedDrawings) ? savedDrawings : [];
 
   return (
-    <div style={{ position: "relative" }}>
-      <Topbar clearCanvas={clearCanvas} saveCanvas={saveCanvas} />
-
-      <Sidebar setColor={setColor} setBrushSize={setBrushSize} />
-
-      <video
-        ref={videoRef}
-        autoPlay
-        playsInline
-        width="640"
-        height="480"
-        style={{ marginLeft: "200px", marginTop: "60px" }}
+    <div className="camera-container">
+      <Topbar mode={mode} shape={shape} clearCanvas={clearCanvas} saveCanvas={saveCanvas} />
+      <Sidebar 
+        currentColor={color} 
+        currentBrushSize={brushSize} 
+        detectedShape={shape} 
       />
+
+      <div className="canvas-area" style={{ marginLeft: '260px', marginTop: '64px', padding: '20px' }}>
+        <video
+          ref={videoRef}
+          autoPlay
+          playsInline
+          className="video-feed"
+          style={{ width: '100%', maxWidth: '1080px', height: 'auto' }}
+        />
+
+        <Canvas
+          drawables={drawables}
+          color={color}
+          brushSize={brushSize}
+          videoSize={videoSize}
+          selectedShapeId={selectedShapeId}
+        />
+      </div>
 
       <Toolbar
         setColor={setColor}
         setBrushSize={setBrushSize}
         clearCanvas={clearCanvas}
         saveCanvas={saveCanvas}
+        undo={undo}
+        redo={() => {}}
+        currentColor={color}
+        currentBrushSize={brushSize}
       />
 
-      <h3>Mode: {mode}</h3>
-      <h3>Shape: {shape}</h3>
+      <style jsx>{`
+        .camera-container {
+          position: fixed;
+          top: 0;
+          left: 0;
+          right: 0;
+          bottom: 0;
+          background: var(--bg-primary);
+          display: flex;
+          transition: background 0.3s ease;
+        }
 
-      <Canvas points={points} color={color} brushSize={brushSize} />
+        .canvas-area {
+          flex: 1;
+          display: flex;
+          align-items: center;
+          justify-content: center;
+          margin-left: 260px;
+          margin-top: 64px;
+          position: relative;
+          overflow: hidden;
+        }
 
-      <div style={{ marginTop: "20px" }}>
-        <h2>Saved Drawings</h2>
-
-        {drawings.length === 0 ? (
-          <p>No drawings saved yet.</p>
-        ) : (
-          <ul>
-            {drawings.map((d) => (
-              <li key={d._id}>
-                {d.name} ({d.detectedShape})
-                <button onClick={() => handleDelete(d._id)}>
-                  Delete
-                </button>
-              </li>
-            ))}
-          </ul>
-        )}
-      </div>
+        .video-feed {
+          width: 100%;
+          height: 100%;
+          object-fit: cover;
+          border-radius: 12px;
+        }
+      `}</style>
     </div>
   );
 }
